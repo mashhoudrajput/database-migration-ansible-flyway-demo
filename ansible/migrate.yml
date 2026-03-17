@@ -1,0 +1,68 @@
+---
+- name: Run Flyway migrations for selected environment
+  hosts: local
+  gather_facts: false
+  vars:
+    project_root: "{{ playbook_dir }}/.."
+    flyway_image: "flyway/flyway:10.17.0"
+    allowed_envs:
+      - dev
+      - qa
+      - prod
+
+  tasks:
+    - name: Validate environment input
+      ansible.builtin.assert:
+        that:
+          - env is defined
+          - env in allowed_envs
+        fail_msg: "Provide env as one of: dev, qa, prod. Example: -e env=dev"
+
+    - name: Check Docker CLI is available
+      ansible.builtin.command: docker --version
+      changed_when: false
+
+    - name: Show migration context
+      ansible.builtin.debug:
+        msg:
+          - "Target environment: {{ env }}"
+          - "Flyway config: flyway/{{ env }}.conf"
+
+    - name: Flyway info
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network
+          - host
+          - -v
+          - "{{ project_root }}:/flyway/project"
+          - -w
+          - /flyway/project
+          - "{{ flyway_image }}"
+          - -configFiles=flyway/{{ env }}.conf
+          - info
+      changed_when: false
+
+    - name: Flyway migrate
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network
+          - host
+          - -v
+          - "{{ project_root }}:/flyway/project"
+          - -w
+          - /flyway/project
+          - "{{ flyway_image }}"
+          - -configFiles=flyway/{{ env }}.conf
+          - migrate
+      register: flyway_migrate
+      changed_when: "'Successfully applied' in flyway_migrate.stdout or 'schema history table' in flyway_migrate.stdout"
+
+    - name: Show migration output
+      ansible.builtin.debug:
+        var: flyway_migrate.stdout_lines

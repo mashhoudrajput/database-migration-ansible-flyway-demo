@@ -1,0 +1,46 @@
+---
+- name: Backup selected MySQL environment before promotion
+  hosts: local
+  gather_facts: false
+  vars:
+    project_root: "{{ playbook_dir }}/.."
+    backup_dir: "{{ project_root }}/backups"
+    db_name: demo
+    env_map:
+      dev:
+        container: dev-db
+      qa:
+        container: qa-db
+      prod:
+        container: prod-db
+
+  tasks:
+    - name: Validate environment input
+      ansible.builtin.assert:
+        that:
+          - env is defined
+          - env in env_map
+        fail_msg: "Provide env as one of: dev, qa, prod. Example: -e env=prod"
+
+    - name: Ensure backup directory exists
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Generate backup timestamp
+      ansible.builtin.set_fact:
+        backup_ts: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+
+    - name: Create backup dump
+      ansible.builtin.shell: >
+        docker exec {{ env_map[env].container }} sh -c
+        'exec mysqldump -uroot -proot {{ db_name }}'
+        > {{ backup_dir }}/{{ env }}_{{ db_name }}_{{ backup_ts }}.sql
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Confirm backup path
+      ansible.builtin.debug:
+        msg: "Backup created: {{ backup_dir }}/{{ env }}_{{ db_name }}_{{ backup_ts }}.sql"
