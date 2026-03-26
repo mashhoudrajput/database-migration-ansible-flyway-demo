@@ -1,0 +1,116 @@
+- name: Multi-tenant Flyway migration
+  hosts: migration_servers
+  gather_facts: true
+  become: false
+  vars:
+    project_root: "{{ playbook_dir }}/../.."
+    discovery_script: "{{ project_root }}/scripts/discovery.py"
+    migration_location: "filesystem:{{ project_root }}/migrations"
+    migration_version: "V1"
+    log_dir: "{{ project_root }}/logs"
+    timestamp: "{{ lookup('pipe', 'date +%Y%m%d_%H%M%S') }}"
+    summary_file: "{{ log_dir }}/migration_summary_{{ env | default('dev') }}_{{ timestamp }}.json"
+    tenant_log_file: "{{ log_dir }}/tenant_migrations_{{ env | default('dev') }}_{{ timestamp }}.jsonl"
+  tasks:
+    - name: Ensure logs directory exists
+      ansible.builtin.file:
+        path: "{{ log_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Ensure Python dependencies for discovery are present
+      ansible.builtin.pip:
+        requirements: "{{ project_root }}/requirements.txt"
+        executable: pip3
+
+    - name: Discover tenant database endpoints
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ discovery_script }}"
+      environment:
+        GOOGLE_APPLICATION_CREDENTIALS: "{{ project_root }}/terraform-sa.json"
+        GCP_PROJECT_ID: "lively-synapse-400818"
+      register: discovery_result
+      changed_when: false
+
+    - name: Parse tenant discovery output
+      ansible.builtin.set_fact:
+        tenants: "{{ discovery_result.stdout | from_json }}"
+
+    - name: Run Flyway migrate for each tenant
+      ansible.builtin.command:
+        argv:
+          - flyway
+          - "-configFiles={{ project_root }}/flyway.conf"
+          - "-url=jdbc:mysql://{{ item.host }}:{{ item.port }}/{{ item.database }}"
+          - "-user={{ item.username }}"
+          - "-password={{ item.password }}"
+          - "-locations={{ migration_location }}"
+          - migrate
+      register: flyway_runs
+      failed_when: false
+      changed_when: false
+      no_log: true
+      loop: "{{ tenants }}"
+      loop_control:
+        label: "{{ item.tenant_uuid }}"
+
+    - name: Build per-tenant results
+      ansible.builtin.set_fact:
+        migration_results: "{{ (migration_results | default([])) + [ {
+          'tenant_uuid': item.item.tenant_uuid,
+          'migration_version': migration_version,
+          'execution_time': item.delta,
+          'status': ( 'SUCCESS' if item.rc == 0 else 'FAILED' ),
+          'return_code': item.rc
+          } ] }}"
+      loop: "{{ flyway_runs.results }}"
+      loop_control:
+        label: "{{ item.item.tenant_uuid }}"
+
+    - name: Write tenant execution log lines
+      ansible.builtin.lineinfile:
+        path: "{{ tenant_log_file }}"
+        line: "{{ {
+          'tenant_uuid': item.tenant_uuid,
+          'migration_version': item.migration_version,
+          'execution_time': item.execution_time,
+          'status': item.status
+          } | to_json }}"
+        create: true
+        insertafter: EOF
+        mode: "0640"
+      loop: "{{ migration_results }}"
+      loop_control:
+        label: "{{ item.tenant_uuid }}"
+
+    - name: Build final summary report
+      ansible.builtin.set_fact:
+        migration_summary:
+          environment: "{{ env | default('dev') }}"
+          migration_version: "{{ migration_version }}"
+          total_tenants: "{{ migration_results | length }}"
+          succeeded: "{{ migration_results | selectattr('status', 'equalto', 'SUCCESS') | list | length }}"
+          failed: "{{ migration_results | selectattr('status', 'equalto', 'FAILED') | list | length }}"
+          generated_at: "{{ ansible_date_time.iso8601 }}"
+          details: "{{ migration_results }}"
+
+    - name: Persist summary report
+      ansible.builtin.copy:
+        content: "{{ migration_summary | to_nice_json }}"
+        dest: "{{ summary_file }}"
+        mode: "0640"
+
+    - name: Print summary report location
+      ansible.builtin.debug:
+        msg:
+          - "Tenant log file: {{ tenant_log_file }}"
+          - "Summary report: {{ summary_file }}"
+          - "Succeeded: {{ migration_summary.succeeded }}"
+          - "Failed: {{ migration_summary.failed }}"
+
+    - name: Fail play if one or more tenants failed
+      ansible.builtin.fail:
+        msg: "One or more tenant migrations failed. See {{ summary_file }} for details."
+      when: migration_summary.failed | int > 0

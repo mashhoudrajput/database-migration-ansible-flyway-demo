@@ -1,0 +1,55 @@
+name: Multi-tenant DB Migration
+
+on:
+  push:
+    branches:
+      - dev
+      - qa
+      - main
+  workflow_dispatch:
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Resolve deployment target
+        id: target
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == "dev" ]]; then
+            echo "inventory=ansible/inventory/dev.ini" >> "$GITHUB_OUTPUT"
+            echo "env_name=dev" >> "$GITHUB_OUTPUT"
+            echo "host=${{ secrets.MIGRATION_HOST_DEV }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF_NAME}" == "qa" ]]; then
+            echo "inventory=ansible/inventory/qa.ini" >> "$GITHUB_OUTPUT"
+            echo "env_name=qa" >> "$GITHUB_OUTPUT"
+            echo "host=${{ secrets.MIGRATION_HOST_QA }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "inventory=ansible/inventory/prod.ini" >> "$GITHUB_OUTPUT"
+            echo "env_name=prod" >> "$GITHUB_OUTPUT"
+            echo "host=${{ secrets.MIGRATION_HOST_PROD }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run migration on remote server
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ steps.target.outputs.host }}
+          username: ${{ secrets.MIGRATION_SSH_USER }}
+          key: ${{ secrets.MIGRATION_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.MIGRATION_SSH_PORT }}
+          script_stop: true
+          command_timeout: 45m
+          script: |
+            set -euo pipefail
+            cd /opt/db-migrations/db-migration-platform
+            git fetch --all --prune
+            git checkout "${GITHUB_REF_NAME}"
+            git pull --ff-only origin "${GITHUB_REF_NAME}"
+            python3 -m pip install --upgrade pip
+            pip3 install -r requirements.txt
+            ansible-playbook ansible/playbooks/migrate.yml -i "${{ steps.target.outputs.inventory }}" -e "env=${{ steps.target.outputs.env_name }}"
