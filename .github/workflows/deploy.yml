@@ -6,9 +6,10 @@ on:
   workflow_dispatch:
 
 env:
+  PROJECT: lively-synapse-400818
   REGION: me-central2
   SERVICE_NAME: database-migration-automation
-  IMAGE: me-central2-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/medicalcircle-dev/database-migration-automation
+  IMAGE: me-central2-docker.pkg.dev/lively-synapse-400818/medicalcircle-dev/database-migration-automation
 
 jobs:
   build-and-deploy:
@@ -21,9 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── Auth ──────────────────────────────────────────────────────────────
       - name: Authenticate to GCP
-        id: auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
@@ -34,7 +33,6 @@ jobs:
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker me-central2-docker.pkg.dev --quiet
 
-      # ── Build & Push ───────────────────────────────────────────────────────
       - name: Build Docker image
         run: |
           docker build \
@@ -47,33 +45,32 @@ jobs:
           docker push ${{ env.IMAGE }}:${{ github.sha }}
           docker push ${{ env.IMAGE }}:latest
 
-      # ── Deploy ─────────────────────────────────────────────────────────────
       - name: Deploy to Cloud Run
         run: |
           gcloud run deploy ${{ env.SERVICE_NAME }} \
             --image=${{ env.IMAGE }}:${{ github.sha }} \
+            --project=${{ env.PROJECT }} \
             --region=${{ env.REGION }} \
             --platform=managed \
             --allow-unauthenticated \
             --ingress=all \
-            --timeout=3600 \
+            --network=default \
+            --subnet=default \
+            --vpc-egress=private-ranges-only \
+            --timeout=300 \
             --memory=512Mi \
             --cpu=1 \
             --min-instances=0 \
             --max-instances=3 \
-            --network=${{ secrets.VPC_NETWORK }} \
-            --subnet=${{ secrets.VPC_SUBNET }} \
-            --vpc-egress=private-ranges-only \
-            --set-env-vars="GCP_PROJECT_ID=${{ secrets.GCP_PROJECT_ID }},GCS_MIGRATION_BUCKET=database-migrations,GCS_MIGRATION_PREFIX=migrations/" \
+            --set-env-vars="GCP_PROJECT_ID=${{ env.PROJECT }},GCS_MIGRATION_BUCKET=database-migrations,GCS_MIGRATION_PREFIX=migrations/" \
             --set-secrets="DISCOVERY_DB_HOST=DB_HOST:latest,DISCOVERY_DB_PORT=DB_PORT:latest,DISCOVERY_DB_USER=DB_USER:latest,DISCOVERY_DB_NAME=DB_NAME:latest,DISCOVERY_DB_PASSWORD=DB_PASSWORD:latest"
 
       - name: Print service URL
         run: |
           URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+            --project=${{ env.PROJECT }} \
             --region=${{ env.REGION }} \
             --format='value(status.url)')
           echo "Service URL: $URL"
-          echo "### Deployed successfully" >> $GITHUB_STEP_SUMMARY
-          echo "**URL:** $URL" >> $GITHUB_STEP_SUMMARY
-          echo "**Image:** \`${{ env.IMAGE }}:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          echo "**Branch:** \`${{ github.ref_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployed: $URL" >> $GITHUB_STEP_SUMMARY
+          echo "Image: \`${{ env.IMAGE }}:${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
