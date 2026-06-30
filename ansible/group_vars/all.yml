@@ -1,0 +1,18 @@
+---
+# GCP / Secret Manager
+gcp_project_id: "REPLACE_ME"
+gcp_sa_key_file: "/etc/gcp/migration-sa.json"
+tenant_secret_suffix: "_DATABASE_URI"
+
+# Discovery
+discovery_script_path: "../discovery.py"
+tenants_output_path: "./tenants.json"
+
+# Flyway
+flyway_bin: "flyway"
+flyway_config_file: "../flyway/conf/flyway.conf"
+flyway_locations_dir: "../flyway/sql"
+
+# Behavior
+fail_on_tenant_error: true
+

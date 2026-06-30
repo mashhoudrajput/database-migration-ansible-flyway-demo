@@ -1,68 +1,150 @@
 ---
-- name: Run Flyway migrations for selected environment
-  hosts: local
+- name: Multi-tenant Flyway migrations
+  hosts: migration_server
   gather_facts: false
+
   vars:
-    project_root: "{{ playbook_dir }}/.."
-    flyway_image: "flyway/flyway:10.17.0"
-    allowed_envs:
-      - dev
-      - qa
-      - prod
+    _required_env_vars:
+      - PUBLIC_DB_HOST
+      - PUBLIC_DB_NAME
+      - PUBLIC_DB_USER
+      - PUBLIC_DB_PASSWORD
 
   tasks:
-    - name: Validate environment input
+    - name: Preflight - ensure required env vars exist for discovery
       ansible.builtin.assert:
         that:
-          - env is defined
-          - env in allowed_envs
-        fail_msg: "Provide env as one of: dev, qa, prod. Example: -e env=dev"
+          - lookup('ansible.builtin.env', item, default='') | length > 0
+        fail_msg: "Missing required environment variable on migration server: {{ item }}"
+      loop: "{{ _required_env_vars }}"
 
-    - name: Check Docker CLI is available
-      ansible.builtin.command: docker --version
+    - name: Preflight - ensure Flyway is installed
+      ansible.builtin.command: "{{ flyway_bin }} -v"
+      register: flyway_version
       changed_when: false
 
-    - name: Show migration context
+    - name: Show Flyway version
       ansible.builtin.debug:
-        msg:
-          - "Target environment: {{ env }}"
-          - "Flyway config: flyway/{{ env }}.conf"
+        msg: "{{ flyway_version.stdout | default(flyway_version.stderr) }}"
 
-    - name: Flyway info
-      ansible.builtin.command:
-        argv:
-          - docker
-          - run
-          - --rm
-          - --network
-          - host
-          - -v
-          - "{{ project_root }}:/flyway/project"
-          - -w
-          - /flyway/project
-          - "{{ flyway_image }}"
-          - -configFiles=flyway/{{ env }}.conf
-          - info
+    - name: Run tenant discovery
+      ansible.builtin.command: >-
+        python3 {{ discovery_script_path }}
+        --output {{ tenants_output_path }}
+      register: discovery_run
       changed_when: false
 
-    - name: Flyway migrate
-      ansible.builtin.command:
-        argv:
-          - docker
-          - run
-          - --rm
-          - --network
-          - host
-          - -v
-          - "{{ project_root }}:/flyway/project"
-          - -w
-          - /flyway/project
-          - "{{ flyway_image }}"
-          - -configFiles=flyway/{{ env }}.conf
-          - migrate
-      register: flyway_migrate
-      changed_when: "'Successfully applied' in flyway_migrate.stdout or 'schema history table' in flyway_migrate.stdout"
+    - name: Load tenants.json
+      ansible.builtin.set_fact:
+        tenants_doc: "{{ lookup('ansible.builtin.file', tenants_output_path) | from_json }}"
 
-    - name: Show migration output
+    - name: Initialize migration results
+      ansible.builtin.set_fact:
+        migration_results: []
+
+    - name: Migrate each tenant (continue on failure)
+      vars:
+        tenant_uuid: "{{ item.tenant_uuid }}"
+        tenant_secret_name: "{{ tenant_uuid }}{{ tenant_secret_suffix | default('_DATABASE_URI') }}"
+        tenant_uri_raw: >-
+          {{
+            lookup(
+              'google.cloud.gcp_secret_manager',
+              key=tenant_secret_name,
+              project=gcp_project_id,
+              version='latest',
+              service_account_file=gcp_sa_key_file
+            )
+          }}
+        # Parse MySQL URI even if password contains '@' by matching the *last* '@' before host.
+        _mysql_user: "{{ (tenant_uri_raw | regex_search('^mysql://([^:]+):', '\\1')) | default('') }}"
+        _mysql_pass: "{{ (tenant_uri_raw | regex_search('^mysql://[^:]+:(.*)@[^:/]+:\\\\d+/.+$', '\\1')) | default('') }}"
+        _mysql_host: "{{ (tenant_uri_raw | regex_search('^mysql://[^:]+:.*@([^:/]+):', '\\1')) | default('') }}"
+        _mysql_port: "{{ (tenant_uri_raw | regex_search('^mysql://[^:]+:.*@[^:/]+:(\\\\d+)/', '\\1')) | default('') }}"
+        _mysql_db: "{{ (tenant_uri_raw | regex_search('^mysql://[^:]+:.*@[^:/]+:\\\\d+/(.+)$', '\\1')) | default('') }}"
+        tenant_jdbc_url: >-
+          {{
+            (tenant_uri_raw is match('^jdbc:'))
+            | ternary(
+                tenant_uri_raw,
+                'jdbc:mysql://' ~ _mysql_host ~ ':' ~ _mysql_port ~ '/' ~ _mysql_db
+              )
+          }}
+        tenant_flyway_user: "{{ (tenant_uri_raw is match('^jdbc:')) | ternary('', _mysql_user) }}"
+        tenant_flyway_password: "{{ (tenant_uri_raw is match('^jdbc:')) | ternary('', _mysql_pass) }}"
+      block:
+        - name: Run Flyway migrate for tenant
+          ansible.builtin.command: >-
+            {{ flyway_bin }}
+            -configFiles={{ flyway_config_file }}
+            -locations=filesystem:{{ flyway_locations_dir }}
+            -url={{ tenant_jdbc_url }}
+            {% if tenant_flyway_user | length > 0 %}-user={{ tenant_flyway_user }}{% endif %}
+            {% if tenant_flyway_password | length > 0 %}-password={{ tenant_flyway_password }}{% endif %}
+            migrate
+          register: flyway_run
+          changed_when: false
+          failed_when: false
+
+        - name: Record tenant result
+          ansible.builtin.set_fact:
+            migration_results: >-
+              {{
+                migration_results + [
+                  {
+                    'tenant_uuid': tenant_uuid,
+                    'rc': flyway_run.rc,
+                    'ok': (flyway_run.rc == 0),
+                    'stdout': (flyway_run.stdout | default('')),
+                    'stderr': (flyway_run.stderr | default(''))
+                  }
+                ]
+              }}
+
+      rescue:
+        - name: Record tenant result (unexpected failure)
+          ansible.builtin.set_fact:
+            migration_results: >-
+              {{
+                migration_results + [
+                  {
+                    'tenant_uuid': tenant_uuid,
+                    'rc': 99,
+                    'ok': false,
+                    'stdout': '',
+                    'stderr': 'Unhandled exception during tenant migration block'
+                  }
+                ]
+              }}
+      loop: "{{ tenants_doc.tenants | default([]) }}"
+      loop_control:
+        label: "{{ item.tenant_uuid | default('unknown-tenant') }}"
+
+    - name: Summary - successful tenants
       ansible.builtin.debug:
-        var: flyway_migrate.stdout_lines
+        msg: "{{ (migration_results | selectattr('ok', 'equalto', true) | map(attribute='tenant_uuid') | list) }}"
+
+    - name: Summary - failed tenants
+      ansible.builtin.debug:
+        msg: >-
+          {{
+            migration_results
+            | selectattr('ok', 'equalto', false)
+            | map(attribute='tenant_uuid')
+            | list
+          }}
+
+    - name: Fail run if any tenant failed (configurable)
+      ansible.builtin.fail:
+        msg: >-
+          Tenant migrations failed for:
+          {{
+            migration_results
+            | selectattr('ok', 'equalto', false)
+            | map(attribute='tenant_uuid')
+            | list
+          }}
+      when:
+        - fail_on_tenant_error | bool
+        - (migration_results | selectattr('ok', 'equalto', false) | list | length) > 0
+

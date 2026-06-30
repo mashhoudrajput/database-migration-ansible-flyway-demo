@@ -1,0 +1,24 @@
+# Secrets / credentials
+terraform-sa.json
+migration-sa.json
+*-sa.json
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Local outputs
+tenants.json
+*.log
+
+# Ansible
+*.retry
+.ansible/
+

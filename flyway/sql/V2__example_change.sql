@@ -1,0 +1,3 @@
+ALTER TABLE app_example
+  ADD COLUMN IF NOT EXISTS note TEXT;
+

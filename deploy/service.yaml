@@ -1,0 +1,64 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: db-migration-service
+  annotations:
+    run.googleapis.com/ingress: internal          # no public access
+spec:
+  template:
+    metadata:
+      annotations:
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "3"
+        run.googleapis.com/execution-environment: gen2
+    spec:
+      serviceAccountName: migration-sa@PROJECT_ID.iam.gserviceaccount.com
+      timeoutSeconds: 3600
+      containerConcurrency: 10
+      containers:
+        - image: gcr.io/PROJECT_ID/db-migration-service:latest
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          env:
+            - name: GCP_PROJECT_ID
+              value: PROJECT_ID
+            - name: GCS_MIGRATION_BUCKET
+              value: my-migration-bucket
+            - name: GCS_MIGRATION_PREFIX
+              value: migrations/
+            - name: DISCOVERY_DB_HOST
+              value: 127.0.0.1
+            - name: DISCOVERY_DB_PORT
+              value: "3306"
+            - name: DISCOVERY_DB_USER
+              value: migration_user
+            - name: DISCOVERY_DB_NAME
+              value: tenants_db
+            - name: MIGRATION_MAX_WORKERS
+              value: "10"
+            - name: LOG_LEVEL
+              value: INFO
+            # Password injected from Secret Manager (never in plain text)
+            - name: DISCOVERY_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: discovery-db-password
+                  key: latest
+          ports:
+            - containerPort: 8080
+          livenessProbe:
+            httpGet:
+              path: /health
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          startupProbe:
+            httpGet:
+              path: /health
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            failureThreshold: 10
+  traffic:
+    - percent: 100
+      latestRevision: true

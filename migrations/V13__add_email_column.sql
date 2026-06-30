@@ -1,2 +1,0 @@
-ALTER TABLE Mashhoud
-    ADD COLUMN email VARCHAR(255) NULL;

@@ -1,0 +1,88 @@
+name: db-migrate
+
+on:
+  push:
+    branches: [dev, qa, main]
+
+permissions:
+  contents: read
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    env:
+      MIGRATION_HOST: ${{ secrets.MIGRATION_HOST }}
+      MIGRATION_USER: ${{ secrets.MIGRATION_USER }}
+      MIGRATION_SSH_KEY: ${{ secrets.MIGRATION_SSH_KEY }}
+      MIGRATION_SSH_PORT: ${{ secrets.MIGRATION_SSH_PORT }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine environment
+        id: env
+        shell: bash
+        run: |
+          ref="${GITHUB_REF_NAME}"
+          if [[ "$ref" == "dev" ]]; then
+            echo "name=dev" >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == "qa" ]]; then
+            echo "name=qa" >> "$GITHUB_OUTPUT"
+          elif [[ "$ref" == "main" ]]; then
+            echo "name=prod" >> "$GITHUB_OUTPUT"
+          else
+            echo "Unsupported branch: $ref"
+            exit 1
+          fi
+
+      - name: Create tarball artifact
+        shell: bash
+        run: |
+          tar -czf repo.tgz \
+            --exclude=.git \
+            --exclude=terraform-sa.json \
+            .
+
+      - name: Prepare SSH key
+        shell: bash
+        run: |
+          if [[ -z "${MIGRATION_SSH_KEY}" ]]; then
+            echo "Missing secret: MIGRATION_SSH_KEY"
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf "%s" "${MIGRATION_SSH_KEY}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Upload tarball to migration server
+        shell: bash
+        run: |
+          port="${MIGRATION_SSH_PORT:-22}"
+          scp -P "$port" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no repo.tgz "${MIGRATION_USER}@${MIGRATION_HOST}:/tmp/repo-${GITHUB_SHA}.tgz"
+
+      - name: Run migrations remotely
+        shell: bash
+        run: |
+          port="${MIGRATION_SSH_PORT:-22}"
+          remote_dir="/tmp/db-migrate-${GITHUB_SHA}"
+          inventory="ansible/inventory/${{ steps.env.outputs.name }}.ini"
+          ssh -p "$port" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no "${MIGRATION_USER}@${MIGRATION_HOST}" bash -lc "set -euo pipefail
+            rm -rf '$remote_dir'
+            mkdir -p '$remote_dir'
+            tar -xzf '/tmp/repo-${GITHUB_SHA}.tgz' -C '$remote_dir'
+            cd '$remote_dir'
+            if command -v ansible-galaxy >/dev/null 2>&1; then
+              ansible-galaxy collection install -r ansible/requirements.yml
+            fi
+            ansible-playbook -i '$inventory' ansible/migrate.yml
+          "
+
+      - name: Cleanup remote files
+        if: always()
+        shell: bash
+        run: |
+          port="${MIGRATION_SSH_PORT:-22}"
+          remote_dir="/tmp/db-migrate-${GITHUB_SHA}"
+          ssh -p "$port" -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no "${MIGRATION_USER}@${MIGRATION_HOST}" bash -lc "rm -rf '$remote_dir' '/tmp/repo-${GITHUB_SHA}.tgz' || true"
+

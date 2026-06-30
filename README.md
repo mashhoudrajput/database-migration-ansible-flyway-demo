@@ -1,322 +1,179 @@
-# Flyway + Ansible MySQL Migration Demo
+# Multi-tenant DB Migration Automation (GCP + Flyway)
 
-This demo shows a safe, version-controlled database migration workflow using:
+This repo discovers tenant databases from a central MySQL database (your “public” database), retrieves per-tenant DB connection URIs from **GCP Secret Manager**, and runs **Flyway** migrations for each tenant using **Ansible**.
 
-- Flyway for schema versioning
-- Ansible for repeatable automation
-- MySQL for Dev, QA, and Prod databases
-- Docker Compose for local environment simulation
+## Architecture
 
-## Project Structure
+1. **Discovery** (`discovery.py`): Connects to the central MySQL DB and outputs `tenants.json`.
+2. **Secret retrieval** (Ansible): For each `tenant_uuid`, reads Secret Manager secret `${tenant_uuid}_DATABASE_URI` (payload is a MySQL URI).
+3. **Migration** (Flyway): Runs migrations from `flyway/sql` against each tenant DB.
+4. **CI/CD** (GitHub Actions): On `dev`, `qa`, `main` pushes, SSH to a private VPC migration server and execute the playbook.
 
-```text
-db-migration-demo/
-├── docker/
-├── docker-compose.yml
-├── migrations/
-│   ├── V1__create_users_table.sql
-│   ├── V2__add_email_column.sql
-│   ├── V3__drop_temp_table.sql
-│   ├── V4__add_age_column.sql
-│   ├── V5__rollback_demo.sql
-│   ├── V7__create_temp_data_table.sql
-│   ├── V8__add_columns_to_temp_data.sql
-│   └── V99__invalid_migration_demo.sql
-├── flyway/
-│   ├── dev.conf
-│   ├── qa.conf
-│   └── prod.conf
-├── ansible/
-│   ├── inventory
-│   ├── migrate.yml
-│   └── backup.yml
-├── scripts/
-│   └── promote.sh
-└── README.md
-```
+## Security (important)
 
-## Environment Mapping
+- **Do not commit service account keys.** This repo currently contains `terraform-sa.json` (a real SA key with a private key). It is in `.gitignore`, but you should remove it from the repo and rotate the key if it has ever been exposed.
+- Tenant DB credentials are **only** retrieved at runtime on the migration server (inside the VPC).
 
-- Development: `localhost:3307` (`dev-db`)
-- QA: `localhost:3308` (`qa-db`)
-- Production: `localhost:3309` (`prod-db`)
-- DB name for all envs: `demo`
-- MySQL root password for all envs: `root`
+## Repo contents
 
-## Prerequisites (Linux)
+- `discovery.py`: tenant discovery (writes `tenants.json`)
+- `ansible/migrate.yml`: playbook that runs discovery, fetches secrets, runs Flyway, summarizes results
+- `ansible/inventory/{dev,qa,prod}.ini`: inventories (the playbook runs locally on the migration server)
+- `ansible/group_vars/all.yml`: shared variables (GCP project, SA key path, Flyway paths)
+- `flyway/conf/flyway.conf`: base Flyway config (no secrets)
+- `flyway/sql/V1__init.sql`, `flyway/sql/V2__example_change.sql`: example migrations
+- `.github/workflows/db-migrate.yml`: branch-triggered remote execution via SSH
 
-- Docker + Docker Compose plugin (`docker compose`)
-- Ansible (`ansible-playbook`)
+## Migration server setup (inside the VPC)
 
-Quick checks:
+### 1) VM placement and network
+
+- Place the migration server in the **same VPC** (or peered VPC) as tenant DBs (private IP connectivity).
+- Allow egress to:
+  - **Secret Manager** APIs (private access as applicable)
+  - Any required DNS resolvers
+- Ensure the VM can reach the central MySQL DB (private IP).
+
+### 2) Install prerequisites
+
+On the migration server:
+
+- **Python 3** (for `discovery.py`)
+- **Ansible** (runs playbook locally)
+- **Flyway CLI** (installed on PATH as `flyway`)
+
+Install Ansible + collection:
 
 ```bash
-docker --version
-docker compose version
-ansible-playbook --version
+sudo apt-get update
+sudo apt-get install -y python3 python3-pip
+python3 -m pip install --user ansible
+
+ansible-galaxy collection install -r ansible/requirements.yml
 ```
 
-## Step 1: Start Docker Environments
+Install Flyway (example; use your preferred method/package manager):
 
 ```bash
-cd db-migration-demo
-docker compose up -d
-docker compose ps
+flyway -v
 ```
 
-Expected:
+### 3) GCP service account key file (server-side)
 
-- `dev-db`, `qa-db`, `prod-db` are running
-- Ports exposed as `3307`, `3308`, `3309`
+You selected a **service account JSON key file on the server**.
 
-## Step 2: Run Migrations on Development
+- Place the key file at the path configured by `gcp_sa_key_file` in `ansible/group_vars/all.yml`
+  - Default: `/etc/gcp/migration-sa.json`
+- Permissions:
 
 ```bash
-ansible-playbook -i ansible/inventory ansible/migrate.yml -e env=dev
+sudo mkdir -p /etc/gcp
+sudo chown root:root /etc/gcp
+sudo chmod 700 /etc/gcp
+sudo chmod 600 /etc/gcp/migration-sa.json
 ```
 
-Expected:
+IAM permissions (minimum):
 
-- Flyway applies migrations in order: `V1`, `V2`, `V3`, `V4`, `V5`
-- Migration state is recorded in `flyway_schema_history`
+- `roles/secretmanager.secretAccessor` on the relevant tenant secrets (or narrower, per-secret IAM).
 
-## Step 3: Promote Migrations to QA
+### 4) Central `public` DB credentials (environment variables)
+
+Set these on the migration server (systemd unit, profile, or a secure runtime mechanism):
+
+- `PUBLIC_DB_HOST`
+- `PUBLIC_DB_PORT` (optional; default `3306`)
+- `PUBLIC_DB_NAME`
+- `PUBLIC_DB_USER`
+- `PUBLIC_DB_PASSWORD`
+- Optional:
+  - `PUBLIC_DB_CONNECT_TIMEOUT` (default `10`)
+
+Example:
 
 ```bash
-ansible-playbook -i ansible/inventory ansible/migrate.yml -e env=qa
+export PUBLIC_DB_HOST="10.0.0.10"
+export PUBLIC_DB_PORT="3306"
+export PUBLIC_DB_NAME="public"
+export PUBLIC_DB_USER="migration_reader"
+export PUBLIC_DB_PASSWORD="***"
 ```
 
-Expected:
+## Secret Manager contract (per-tenant)
 
-- QA receives same ordered migration history as Dev
-- No manual SQL execution needed
+- Secret name: `{{ tenant_uuid }}_DATABASE_URI`
+- Secret payload: **MySQL URI**, for example:
+  - `mysql://user:pass@10.7.1.3:3306/tenant_db`
 
-## Step 4: Promote to Production (with Backup)
+The playbook converts `mysql://...` to `jdbc:mysql://...` and passes Flyway `-user` / `-password`.
+
+Note: If your password contains `@` (example: `medicalcircle@2023`), a normal URI is ambiguous unless encoded. The playbook intentionally parses the URI using the **last `@`** as the host separator so the example secret value you gave still works.
+
+## Running migrations manually (on the migration server)
+
+From a checked out copy of this repo:
 
 ```bash
-ansible-playbook -i ansible/inventory ansible/backup.yml -e env=prod
-ansible-playbook -i ansible/inventory ansible/migrate.yml -e env=prod
+ansible-playbook -i ansible/inventory/dev.ini ansible/migrate.yml
 ```
 
-Or run the scripted workflow:
+Branch/environment mapping is:
 
-```bash
-./scripts/promote.sh prod
+- `dev` → `ansible/inventory/dev.ini`
+- `qa` → `ansible/inventory/qa.ini`
+- `main` → `ansible/inventory/prod.ini`
+
+## GitHub Actions CI/CD
+
+Workflow: `.github/workflows/db-migrate.yml`
+
+### Required GitHub Secrets
+
+- `MIGRATION_HOST`: migration server DNS or IP
+- `MIGRATION_USER`: SSH username
+- `MIGRATION_SSH_KEY`: private key (PEM) for SSH
+- `MIGRATION_SSH_PORT`: optional (defaults to `22`)
+
+### How it runs
+
+On push to `dev`, `qa`, or `main`:
+
+- The workflow tars the repo (excluding `.git` and `terraform-sa.json`)
+- Uploads it to the migration server
+- Extracts to `/tmp/db-migrate-$GITHUB_SHA`
+- Runs `ansible-playbook` using the inventory matching the branch
+- Deletes the extracted directory and tarball
+
+## Failure handling / summary
+
+The playbook attempts **all tenants** and records per-tenant results.
+
+- A failed tenant migration is logged and the play continues.
+- At the end, a summary is printed listing succeeded and failed tenants.
+- If `fail_on_tenant_error: true` (default), the play fails if any tenant failed (so CI goes red).
+
+## Configuration knobs
+
+Edit these in `ansible/group_vars/all.yml`:
+
+- `gcp_project_id`: GCP project hosting the tenant secrets
+- `gcp_sa_key_file`: path to the SA JSON on the migration server
+- `flyway_bin`: Flyway executable name/path
+- `fail_on_tenant_error`: whether CI should fail if any tenant fails
+
+## First test (Windows): SSH VM, connect DB, SHOW DATABASES
+
+If PowerShell blocks `gcloud` with an execution policy error, use the helper scripts:
+
+- `scripts/gcloud.ps1`: wrapper that runs `gcloud.cmd` (no `.ps1` Cloud SDK wrapper)
+- `scripts/first-test.ps1`: authenticates and runs `SHOW DATABASES;` via SSH
+
+Example (PowerShell):
+
+```powershell
+.\scripts\gcloud.ps1 version
+
+# Run the full first test (fill in your zone)
+.\scripts\first-test.ps1 -Zone "YOUR_ZONE"
 ```
 
-Expected:
-
-- A timestamped backup file appears under `backups/`
-- Production migrations run only after backup is complete
-
-## Step 5: Show Flyway Schema History
-
-Run this for each environment:
-
-```bash
-docker exec dev-db mysql -uroot -proot -D demo -e "SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
-docker exec qa-db mysql -uroot -proot -D demo -e "SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
-docker exec prod-db mysql -uroot -proot -D demo -e "SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
-```
-
-Expected versions:
-
-- `1`, `2`, `3`, `4`, `5`, `7`, `8` with `success=1`
-
-## Step 6: Demonstrate Rollback Scenarios
-
-This demo uses a forward-only rollback strategy:
-
-- `V4` adds `users.age`
-- `V5` removes `users.age` (returns schema to stable state)
-
-Check final `users` table columns:
-
-```bash
-docker exec prod-db mysql -uroot -proot -D demo -e "DESCRIBE users;"
-```
-
-Expected:
-
-- Column `age` is not present after `V5`
-
-## Failure Simulation (Flyway Protection Demo)
-
-`V99__invalid_migration_demo.sql` intentionally contains bad SQL.
-Normal promotions are safe because env configs pin target to version `8`.
-
-To simulate failure in Dev:
-
-```bash
-docker run --rm --network host \
-  -v "$(pwd):/flyway/project" -w /flyway/project \
-  flyway/flyway:10.17.0 \
-  -configFiles=flyway/dev.conf \
-  -target=99 migrate
-```
-
-Expected:
-
-- Flyway exits with error at version `99`
-- Deployment stops immediately
-- Already applied successful migrations remain intact
-
-Inspect failed migration status:
-
-```bash
-docker exec dev-db mysql -uroot -proot -D demo -e "SELECT installed_rank, version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
-```
-
-Reset Dev state after failure demo:
-
-```bash
-docker run --rm --network host \
-  -v "$(pwd):/flyway/project" -w /flyway/project \
-  flyway/flyway:10.17.0 \
-  -configFiles=flyway/dev.conf \
-  repair
-```
-
-## One-Command Promotion Options
-
-```bash
-./scripts/promote.sh dev    # migrate dev only
-./scripts/promote.sh qa     # migrate qa only
-./scripts/promote.sh prod   # backup + migrate prod
-./scripts/promote.sh full   # dev -> qa -> prod (with prod backup)
-```
-
-## Client Demo Runbook (Step-by-Step)
-
-Use this sequence during a live client demo to cover the highest-value scenarios.
-
-### 0) Clean reset before starting
-
-```bash
-docker compose down -v
-rm -rf backups
-docker compose up -d
-docker compose ps
-```
-
-### 1) Show initial state (all envs empty)
-
-```bash
-docker exec dev-db mysql -uroot -proot -D demo -e "SHOW TABLES;"
-docker exec qa-db mysql -uroot -proot -D demo -e "SHOW TABLES;"
-docker exec prod-db mysql -uroot -proot -D demo -e "SHOW TABLES;"
-```
-
-### 2) Promote Dev -> QA -> Prod safely
-
-```bash
-ansible-playbook -i ansible/inventory ansible/migrate.yml -e env=dev
-ansible-playbook -i ansible/inventory ansible/migrate.yml -e env=qa
-ansible-playbook -i ansible/inventory ansible/backup.yml -e env=prod
-ansible-playbook -i ansible/inventory ansible/migrate.yml -e env=prod
-```
-
-### 3) Prove version consistency across environments
-
-```bash
-docker exec dev-db mysql -uroot -proot -D demo -e "SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
-docker exec qa-db mysql -uroot -proot -D demo -e "SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
-docker exec prod-db mysql -uroot -proot -D demo -e "SELECT version, description, success FROM flyway_schema_history ORDER BY installed_rank;"
-```
-
-Expected in all envs:
-- versions `1..5,7,8`
-- all `success=1`
-
-### 4) Demonstrate rollback behavior (forward migration rollback)
-
-```bash
-docker exec prod-db mysql -uroot -proot -D demo -e "DESCRIBE users;"
-```
-
-Expected:
-- `email` exists
-- `age` does **not** exist (added in `V4`, removed in `V5`)
-- `temp_data` exists (re-created in `V7`) with new columns from `V8`
-
-### 5) Show safety guard with bad migration
-
-```bash
-docker run --rm --network host \
-  -v "$(pwd):/flyway/project" -w /flyway/project \
-  flyway/flyway:10.17.0 \
-  -configFiles=flyway/dev.conf \
-  -target=99 migrate
-```
-
-Expected:
-- command fails on `V99__invalid_migration_demo.sql`
-- Flyway stops deployment immediately
-
-### 6) Show controlled recovery
-
-```bash
-docker run --rm --network host \
-  -v "$(pwd):/flyway/project" -w /flyway/project \
-  flyway/flyway:10.17.0 \
-  -configFiles=flyway/dev.conf \
-  repair
-```
-
-### 7) Show idempotency (safe re-run, no changes)
-
-```bash
-./scripts/promote.sh full
-```
-
-Expected:
-- Flyway reports schema up to date where applicable
-- no destructive behavior
-
-## Additional Negative Tests
-
-These are useful to show automation guardrails.
-
-Invalid environment for migrate:
-
-```bash
-ansible-playbook -i ansible/inventory ansible/migrate.yml -e env=staging
-```
-
-Invalid environment for backup:
-
-```bash
-ansible-playbook -i ansible/inventory ansible/backup.yml -e env=staging
-```
-
-Invalid promote stage:
-
-```bash
-./scripts/promote.sh nonsense
-```
-
-Expected:
-- each command fails fast with a clear validation message
-
-## Tested Scenarios (Verified Locally)
-
-- docker startup and health checks for `dev-db`, `qa-db`, `prod-db`
-- first-time migration on all environments (`V1` -> `V5`)
-- production backup creation before production migration
-- idempotent re-run of migrations (`no migration necessary`)
-- schema validation (`users` exists, `temp_data` re-created by `V7` and extended by `V8`, `age` removed by rollback demo)
-- failure simulation with invalid `V99` migration
-- post-failure recovery using `flyway repair`
-- input validation failures (`env=staging`, invalid promote stage)
-
-## Demo Reset
-
-To reset and re-run from scratch:
-
-```bash
-docker compose down -v
-docker compose up -d
-rm -rf backups
-```
-
-Then repeat steps 2-6.
