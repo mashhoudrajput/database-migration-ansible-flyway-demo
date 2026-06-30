@@ -32,5 +32,4 @@ CMD exec uvicorn app.main:app \
     --host 0.0.0.0 \
     --port "${PORT}" \
     --workers 1 \
-    --log-config /dev/null \
     --no-access-log
