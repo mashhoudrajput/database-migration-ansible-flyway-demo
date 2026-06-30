@@ -15,28 +15,32 @@ _svc = MigrationService()
 
 def _enrich_tenant(t: Tenant, secret_svc: SecretService, bucket_total: int) -> TenantInfo:
     """Build a TenantInfo card: connection status + quick migration counts."""
-    conn = secret_svc.get_tenant_connection_info(t.tenant_id)
+    from app.services.db_service import DBService
 
     applied_count = 0
     pending_count = 0
     last_version = None
+    connected = False
+    db_host = db_name = error = None
 
-    if conn["connected"]:
+    try:
+        host, port, user, pwd, database = secret_svc.get_tenant_credentials(t.tenant_id)
+        connected = True
+        db_host = host
+        db_name = database
+
+        db_svc = DBService()
+        db_conn = db_svc.connect(host, port, user, pwd, database)
         try:
-            from app.services.db_service import DBService
-            db_svc = DBService()
-            host, port, user, pwd, database = secret_svc.get_tenant_credentials(t.tenant_id)
-            db_conn = db_svc.connect(host, port, user, pwd, database)
-            try:
-                applied = db_svc.get_applied_versions(db_conn)
-                last = db_svc.get_last_applied(db_conn)
-                applied_count = len(applied)
-                pending_count = max(0, bucket_total - applied_count)
-                last_version = last["version"] if last else None
-            finally:
-                db_conn.close()
-        except Exception:
-            pass
+            applied = db_svc.get_applied_versions(db_conn)
+            last = db_svc.get_last_applied(db_conn)
+            applied_count = len(applied)
+            pending_count = max(0, bucket_total - applied_count)
+            last_version = last["version"] if last else None
+        finally:
+            db_conn.close()
+    except Exception as exc:
+        error = str(exc)
 
     return TenantInfo(
         tenant_id=t.tenant_id,
@@ -44,14 +48,14 @@ def _enrich_tenant(t: Tenant, secret_svc: SecretService, bucket_total: int) -> T
         hospital_id=t.hospital_id,
         cluster_type=t.cluster_type,
         tenant_status=t.tenant_status,
-        connection="connected" if conn["connected"] else "not_connected",
-        db_host=conn["db_host"],
-        db_name=conn["db_name"],
+        connection="connected" if connected else "not_connected",
+        db_host=db_host,
+        db_name=db_name,
         applied_count=applied_count,
         pending_count=pending_count,
         has_pending=pending_count > 0,
         last_applied_version=last_version,
-        error=conn["error"],
+        error=error,
     )
 
 

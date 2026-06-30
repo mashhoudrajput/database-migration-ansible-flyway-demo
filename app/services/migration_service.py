@@ -141,6 +141,14 @@ class MigrationService:
         return self._parallel(self._tenant_last, tenants)
 
     def _tenant_last(self, tenant: Tenant) -> dict:
+        conn_info = self.secret.get_tenant_connection_info(tenant.tenant_id)
+        if not conn_info["connected"]:
+            return {
+                "tenant_id": tenant.tenant_id,
+                "name": tenant.name,
+                "connection": "not_connected",
+                "last_migration": None,
+            }
         try:
             host, port, user, password, database = self.secret.get_tenant_credentials(
                 tenant.tenant_id
@@ -150,7 +158,12 @@ class MigrationService:
                 last = self.db.get_last_applied(conn)
             finally:
                 conn.close()
-            return {"tenant_id": tenant.tenant_id, "name": tenant.name, "last_migration": last}
+            return {
+                "tenant_id": tenant.tenant_id,
+                "name": tenant.name,
+                "connection": "connected",
+                "last_migration": last,
+            }
         except Exception as exc:
             return {"tenant_id": tenant.tenant_id, "name": tenant.name, "error": str(exc)}
 
@@ -161,6 +174,15 @@ class MigrationService:
         return self._parallel(self._tenant_history, tenants)
 
     def _tenant_history(self, tenant: Tenant) -> dict:
+        conn_info = self.secret.get_tenant_connection_info(tenant.tenant_id)
+        if not conn_info["connected"]:
+            return {
+                "tenant_id": tenant.tenant_id,
+                "name": tenant.name,
+                "connection": "not_connected",
+                "total": 0,
+                "history": [],
+            }
         try:
             host, port, user, password, database = self.secret.get_tenant_credentials(
                 tenant.tenant_id
@@ -172,11 +194,13 @@ class MigrationService:
                 conn.close()
             return {
                 "tenant_id": tenant.tenant_id,
+                "name": tenant.name,
+                "connection": "connected",
                 "total": len(history),
                 "history": history,
             }
         except Exception as exc:
-            return {"tenant_id": tenant.tenant_id, "error": str(exc)}
+            return {"tenant_id": tenant.tenant_id, "name": tenant.name, "error": str(exc)}
 
     # ─── Run ─────────────────────────────────────────────────────────────────
 
@@ -195,13 +219,14 @@ class MigrationService:
             dry_run=dry_run,
         )
 
-        succeeded = sum(1 for r in results if r.success)
+        failed = sum(1 for r in results if not r.success)
+        succeeded = len(results) - failed
         return RunMigrationResponse(
-            success=succeeded == len(results),
+            success=failed == 0,
             dry_run=dry_run,
             tenants_processed=len(results),
             tenants_succeeded=succeeded,
-            tenants_failed=len(results) - succeeded,
+            tenants_failed=failed,
             results=results,
         )
 
@@ -213,6 +238,15 @@ class MigrationService:
         dry_run: bool,
     ) -> TenantRunResult:
         try:
+            conn_info = self.secret.get_tenant_connection_info(tenant.tenant_id)
+            if not conn_info["connected"]:
+                return TenantRunResult(
+                    tenant_id=tenant.tenant_id,
+                    name=tenant.name,
+                    success=True,
+                    message="Skipped — no credentials configured",
+                )
+
             host, port, user, password, database = self.secret.get_tenant_credentials(
                 tenant.tenant_id
             )
@@ -311,12 +345,13 @@ class MigrationService:
             target_version=target_version,
         )
 
-        succeeded = sum(1 for r in results if r.success)
+        failed = sum(1 for r in results if not r.success)
+        succeeded = len(results) - failed
         return RollbackResponse(
-            success=succeeded == len(results),
+            success=failed == 0,
             tenants_processed=len(results),
             tenants_succeeded=succeeded,
-            tenants_failed=len(results) - succeeded,
+            tenants_failed=failed,
             results=results,
         )
 
@@ -328,6 +363,15 @@ class MigrationService:
         target_version: Optional[str],
     ) -> TenantRollbackResult:
         try:
+            conn_info = self.secret.get_tenant_connection_info(tenant.tenant_id)
+            if not conn_info["connected"]:
+                return TenantRollbackResult(
+                    tenant_id=tenant.tenant_id,
+                    name=tenant.name,
+                    success=True,
+                    message="Skipped — no credentials configured",
+                )
+
             host, port, user, password, database = self.secret.get_tenant_credentials(
                 tenant.tenant_id
             )

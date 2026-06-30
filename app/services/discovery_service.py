@@ -81,6 +81,26 @@ class DiscoveryService:
         ]
 
     def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
-        col = settings.tenant_uuid_col
-        tenants = self.discover_tenants(where=f"`{col}` = '{tenant_id}'")
-        return tenants[0] if tenants else None
+        c = settings
+        sql = (
+            f"SELECT `{c.tenant_uuid_col}`, `{c.tenant_name_col}`, "
+            f"`{c.tenant_hospital_id_col}`, `{c.tenant_cluster_type_col}`, "
+            f"`{c.tenant_status_col}` "
+            f"FROM `{c.tenant_metadata_table}` WHERE `{c.tenant_uuid_col}` = %s"
+        )
+        conn = self._connect()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, (tenant_id,))
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return Tenant(
+            tenant_id=str(row[c.tenant_uuid_col]),
+            name=row.get(c.tenant_name_col) or "",
+            hospital_id=str(row.get(c.tenant_hospital_id_col) or ""),
+            cluster_type=row.get(c.tenant_cluster_type_col) or "unknown",
+            tenant_status=row.get(c.tenant_status_col) or "unknown",
+        )
