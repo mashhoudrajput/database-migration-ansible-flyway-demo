@@ -62,7 +62,7 @@ jobs:
             --cpu=1 \
             --min-instances=0 \
             --max-instances=3 \
-            --set-env-vars="GCP_PROJECT_ID=${{ env.PROJECT }},GCS_MIGRATION_BUCKET=database-migrations,GCS_MIGRATION_PREFIX=migrations/" \
+            --set-env-vars="GCP_PROJECT_ID=${{ env.PROJECT }},GCS_MIGRATION_BUCKET=lively-synapse-400818-db-migrations,GCS_MIGRATION_PREFIX=migrations/" \
             --set-secrets="DISCOVERY_DB_HOST=DB_HOST:latest,DISCOVERY_DB_PORT=DB_PORT:latest,DISCOVERY_DB_USER=DB_USER:latest,DISCOVERY_DB_NAME=DB_NAME:latest,DISCOVERY_DB_PASSWORD=DB_PASSWORD:latest"
 
       - name: Print service URL
