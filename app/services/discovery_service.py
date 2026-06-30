@@ -36,14 +36,15 @@ class DiscoveryService:
             cursorclass=pymysql.cursors.DictCursor,
         )
 
-    def ping(self) -> bool:
+    def ping(self) -> tuple:
+        """Returns (True, None) on success or (False, error_str) on failure."""
         try:
             conn = self._connect()
             conn.ping()
             conn.close()
-            return True
-        except Exception:
-            return False
+            return True, None
+        except Exception as exc:
+            return False, str(exc)
 
     def discover_tenants(self, where: Optional[str] = None) -> List[Tenant]:
         c = settings

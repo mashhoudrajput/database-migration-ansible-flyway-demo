@@ -38,11 +38,12 @@ def status():
     # Discovery DB
     try:
         disc = DiscoveryService()
-        ok = disc.ping()
+        ok, err = disc.ping()
         checks["discovery_db"] = {
             "status": "ok" if ok else "error",
             "host": settings.discovery_db_host,
-            "detail": None if ok else "Connection refused or credentials invalid",
+            "port": settings.discovery_db_port,
+            "detail": err,
         }
     except Exception as exc:
         checks["discovery_db"] = {"status": "error", "detail": str(exc)}
