@@ -56,7 +56,6 @@ jobs:
             --platform=managed \
             --allow-unauthenticated \
             --ingress=all \
-            --service-account=${{ secrets.CLOUD_RUN_SA }} \
             --timeout=3600 \
             --memory=512Mi \
             --cpu=1 \
