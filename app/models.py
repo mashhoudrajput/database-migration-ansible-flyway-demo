@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 
 # ─── Bucket / migration file ─────────────────────────────────────────────────
@@ -13,75 +13,64 @@ class MigrationFile(BaseModel):
     version: str
     description: str
     filename: str
-    checksum: str        # SHA-256 of file content
+    checksum: str
     size_bytes: int
     gcs_path: str
     is_undo: bool = False
 
 
-# ─── History record (stored inside each tenant DB) ───────────────────────────
-
-class AppliedMigration(BaseModel):
-    id: Optional[int] = None
-    version: str
-    description: str
-    filename: str
-    checksum: str
-    applied_at: Optional[datetime] = None
-    applied_by: str = "migration-service"
-    execution_time_ms: Optional[int] = None
-    success: bool = True
-
-    model_config = {"from_attributes": True}
-
-
-# ─── Per-tenant status ───────────────────────────────────────────────────────
+# ─── Per-tenant migration status ─────────────────────────────────────────────
 
 class TenantState(str, Enum):
-    UP_TO_DATE = "up_to_date"
-    PENDING = "pending"
+    UP_TO_DATE        = "up_to_date"
+    PENDING           = "pending"
     CHECKSUM_MISMATCH = "checksum_mismatch"
-    ERROR = "error"
+    NOT_CONNECTED     = "not_connected"
+    ERROR             = "error"
 
 
 class TenantMigrationStatus(BaseModel):
     tenant_id: str
-    db_host: str
-    db_name: str
+    name: str = ""
+    hospital_id: str = ""
+    cluster_type: str = ""
+    db_host: Optional[str] = None       # populated from Secret Manager URI
+    db_name: Optional[str] = None
     last_applied_version: Optional[str] = None
     last_applied_at: Optional[datetime] = None
     applied_count: int = 0
     pending_count: int = 0
     pending_migrations: List[MigrationFile] = []
-    checksum_mismatches: List[str] = []   # list of versions with changed files
+    checksum_mismatches: List[str] = []
     state: TenantState = TenantState.UP_TO_DATE
     error: Optional[str] = None
 
 
-# ─── Migration status (aggregated) ───────────────────────────────────────────
+# ─── Aggregated migration status ─────────────────────────────────────────────
 
 class MigrationStatusResponse(BaseModel):
     has_pending: bool
     bucket_migration_count: int
     undo_script_count: int
     pending_version_count: int
-    pending_versions: List[str]           # sorted across all tenants
+    pending_versions: List[str]
     tenants: List[TenantMigrationStatus]
 
 
-# ─── Run request / response ───────────────────────────────────────────────────
+# ─── Run ─────────────────────────────────────────────────────────────────────
 
 class RunMigrationRequest(BaseModel):
     confirm: bool
-    tenant_ids: Optional[List[str]] = None   # None → all tenants
+    tenant_ids: Optional[List[str]] = None
     dry_run: bool = False
 
 
 class TenantRunResult(BaseModel):
     tenant_id: str
+    name: str = ""
     success: bool
     applied: List[str] = []
-    would_apply: List[str] = []     # dry_run only
+    would_apply: List[str] = []
     error: Optional[str] = None
     message: str = ""
 
@@ -95,16 +84,17 @@ class RunMigrationResponse(BaseModel):
     results: List[TenantRunResult]
 
 
-# ─── Rollback request / response ─────────────────────────────────────────────
+# ─── Rollback ─────────────────────────────────────────────────────────────────
 
 class RollbackRequest(BaseModel):
     confirm: bool
     tenant_ids: Optional[List[str]] = None
-    target_version: Optional[str] = None    # roll back to this version; None = one step
+    target_version: Optional[str] = None
 
 
 class TenantRollbackResult(BaseModel):
     tenant_id: str
+    name: str = ""
     success: bool
     rolled_back_version: Optional[str] = None
     error: Optional[str] = None
@@ -119,10 +109,10 @@ class RollbackResponse(BaseModel):
     results: List[TenantRollbackResult]
 
 
-# ─── Validate response ────────────────────────────────────────────────────────
+# ─── Validate ─────────────────────────────────────────────────────────────────
 
 class ValidationIssue(BaseModel):
-    level: str     # "error" | "warning"
+    level: str
     filename: str
     message: str
 
@@ -138,13 +128,24 @@ class ValidateResponse(BaseModel):
 
 class TenantInfo(BaseModel):
     tenant_id: str
-    db_host: str
-    db_name: str
-    db_port: Optional[int] = None
+    name: str
+    hospital_id: str
+    cluster_type: str           # "big_hospital" | "small_clinic"
+    tenant_status: str          # "active" | "inactive"
+    connection: str             # "connected" | "not_connected"
+    db_host: Optional[str] = None
+    db_name: Optional[str] = None
+    applied_count: int = 0
+    pending_count: int = 0
+    has_pending: bool = False
+    last_applied_version: Optional[str] = None
+    error: Optional[str] = None
 
 
 class TenantListResponse(BaseModel):
     count: int
+    connected_count: int
+    with_pending_count: int
     tenants: List[TenantInfo]
 
 

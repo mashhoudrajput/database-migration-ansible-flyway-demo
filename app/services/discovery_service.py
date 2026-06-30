@@ -1,4 +1,4 @@
-"""Discover tenant metadata from the central MySQL discovery database."""
+"""Discover tenant metadata from medicalcircle_dev.cluster_hospitals."""
 from __future__ import annotations
 
 import logging
@@ -15,10 +15,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class Tenant:
-    tenant_id: str
-    db_host: str
-    db_name: str
-    db_port: Optional[int]
+    tenant_id: str        # UUID e.g. ab3b7a1d-aeb8-4b2d-a18f-a408e13d7636
+    name: str             # display name  e.g. "Katzen Krankenhaus"
+    hospital_id: str      # short ID e.g. "542562"
+    cluster_type: str     # "big_hospital" | "small_clinic"
+    tenant_status: str    # "active" | "inactive"
+    # NOTE: db_host / db_name / password come from Secret Manager at migration time,
+    #       NOT from this table.
 
 
 class DiscoveryService:
@@ -34,7 +37,6 @@ class DiscoveryService:
         )
 
     def ping(self) -> bool:
-        """Return True if the discovery DB is reachable."""
         try:
             conn = self._connect()
             conn.ping()
@@ -44,17 +46,13 @@ class DiscoveryService:
             return False
 
     def discover_tenants(self, where: Optional[str] = None) -> List[Tenant]:
-        """
-        Query the central DB for all tenants.
-        `where` is an optional raw SQL WHERE clause (without the WHERE keyword).
-        """
-        cols = ", ".join([
-            settings.tenant_uuid_col,
-            settings.tenant_db_host_col,
-            settings.tenant_db_name_col,
-            settings.tenant_db_port_col,
-        ])
-        sql = f"SELECT {cols} FROM {settings.tenant_metadata_table}"
+        c = settings
+        sql = (
+            f"SELECT `{c.tenant_uuid_col}`, `{c.tenant_name_col}`, "
+            f"`{c.tenant_hospital_id_col}`, `{c.tenant_cluster_type_col}`, "
+            f"`{c.tenant_status_col}` "
+            f"FROM `{c.tenant_metadata_table}`"
+        )
         if where:
             sql += f" WHERE {where}"
 
@@ -68,16 +66,16 @@ class DiscoveryService:
 
         return [
             Tenant(
-                tenant_id=row[settings.tenant_uuid_col],
-                db_host=row[settings.tenant_db_host_col],
-                db_name=row[settings.tenant_db_name_col],
-                db_port=row.get(settings.tenant_db_port_col),
+                tenant_id=str(row[c.tenant_uuid_col]),
+                name=row.get(c.tenant_name_col) or "",
+                hospital_id=str(row.get(c.tenant_hospital_id_col) or ""),
+                cluster_type=row.get(c.tenant_cluster_type_col) or "unknown",
+                tenant_status=row.get(c.tenant_status_col) or "unknown",
             )
             for row in rows
         ]
 
     def get_tenant(self, tenant_id: str) -> Optional[Tenant]:
-        # Use parameterised value but the column/table names come from config
         col = settings.tenant_uuid_col
-        tenants = self.discover_tenants(where=f"{col} = '{tenant_id}'")
+        tenants = self.discover_tenants(where=f"`{col}` = '{tenant_id}'")
         return tenants[0] if tenants else None

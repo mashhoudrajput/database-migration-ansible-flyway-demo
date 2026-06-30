@@ -14,20 +14,25 @@ class Settings(BaseSettings):
     gcs_migration_bucket: str
     gcs_migration_prefix: str = "migrations/"
 
-    # Central discovery DB (holds tenant metadata: uuid, host, db_name)
+    # Central discovery DB  (medicalcircle_dev.cluster_hospitals)
+    # All values injected at runtime via --set-secrets from Secret Manager
     discovery_db_host: str
     discovery_db_port: int = 3306
     discovery_db_user: str
-    discovery_db_password: str          # Injected via Cloud Run --set-secrets
-    discovery_db_name: str
+    discovery_db_password: str
+    discovery_db_name: str = "medicalcircle_dev"
     discovery_db_connect_timeout: int = 10
-    tenant_metadata_table: str = "tenant_metadata"
-    tenant_uuid_col: str = "tenant_uuid"
-    tenant_db_host_col: str = "db_host"
-    tenant_db_name_col: str = "db_name"
-    tenant_db_port_col: str = "db_port"
 
-    # Secret Manager: tenant secrets are named {tenant_uuid}{suffix}
+    # cluster_hospitals column names
+    tenant_metadata_table: str = "cluster_hospitals"
+    tenant_uuid_col: str = "id"
+    tenant_name_col: str = "name"
+    tenant_hospital_id_col: str = "hospital_id"
+    tenant_cluster_type_col: str = "cluster_type"
+    tenant_status_col: str = "status"
+
+    # Secret naming: hyphens in UUID are replaced with underscores
+    # e.g.  ab3b7a1d-aeb8-... → ab3b7a1d_aeb8_..._DATABASE_URI
     secret_tenant_suffix: str = "_DATABASE_URI"
 
     # Table created inside each tenant DB to track migration history

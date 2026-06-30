@@ -40,21 +40,16 @@ steps:
       - --cpu=1
       - --min-instances=0
       - --max-instances=3
-      # Plain env vars (non-sensitive)
-      - --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,GCS_MIGRATION_BUCKET=$_GCS_BUCKET,GCS_MIGRATION_PREFIX=migrations/,DISCOVERY_DB_HOST=$_DISCOVERY_DB_HOST,DISCOVERY_DB_PORT=$_DISCOVERY_DB_PORT,DISCOVERY_DB_USER=$_DISCOVERY_DB_USER,DISCOVERY_DB_NAME=$_DISCOVERY_DB_NAME
-      # Sensitive values from Secret Manager
-      - --set-secrets=DISCOVERY_DB_PASSWORD=$_DISCOVERY_DB_PASSWORD_SECRET:latest
+      # Non-sensitive env vars only
+      - --set-env-vars=GCP_PROJECT_ID=$PROJECT_ID,GCS_MIGRATION_BUCKET=$_GCS_BUCKET,GCS_MIGRATION_PREFIX=migrations/
+      # All discovery DB credentials pulled from Secret Manager (secrets named DB_HOST, DB_PORT, etc.)
+      - --set-secrets=DISCOVERY_DB_HOST=DB_HOST:latest,DISCOVERY_DB_PORT=DB_PORT:latest,DISCOVERY_DB_USER=DB_USER:latest,DISCOVERY_DB_NAME=DB_NAME:latest,DISCOVERY_DB_PASSWORD=DB_PASSWORD:latest
     waitFor: [push-sha]
 
 substitutions:
   _REGION: us-central1
   _SERVICE_ACCOUNT: migration-sa@${PROJECT_ID}.iam.gserviceaccount.com
-  _GCS_BUCKET: my-migration-bucket
-  _DISCOVERY_DB_HOST: 127.0.0.1
-  _DISCOVERY_DB_PORT: "3306"
-  _DISCOVERY_DB_USER: migration_user
-  _DISCOVERY_DB_NAME: tenants_db
-  _DISCOVERY_DB_PASSWORD_SECRET: discovery-db-password   # Secret Manager secret name
+  _GCS_BUCKET: database-migrations
 
 images:
   - gcr.io/$PROJECT_ID/db-migration-service:$COMMIT_SHA

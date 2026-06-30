@@ -33,12 +33,28 @@ class SecretService:
     ) -> Tuple[str, int, str, str, str]:
         """
         Returns (host, port, user, password, database) for a tenant.
-        Secret name: {tenant_id}{suffix}  e.g. abc123_DATABASE_URI
-        Secret value: mysql://user:pass@host:3306/dbname
+        Secret name: {uuid_with_underscores}{suffix}
+        e.g. ab3b7a1d_aeb8_4b2d_a18f_a408e13d7636_DATABASE_URI
+        Secret value: mysql://root:medicalcircle@2023@10.7.1.3:3306/cluster_db
         """
-        secret_name = f"{tenant_id}{settings.secret_tenant_suffix}"
+        safe_id = tenant_id.replace("-", "_")   # UUIDs use hyphens; secrets use underscores
+        secret_name = f"{safe_id}{settings.secret_tenant_suffix}"
         uri = self.get_raw(secret_name)
         return self._parse_uri(uri)
+
+    def get_tenant_connection_info(self, tenant_id: str) -> dict:
+        """
+        Returns connection metadata dict — never raises.
+        On success: {connected: True, db_host, db_port, db_name, error: None}
+        On failure: {connected: False, db_host: None, ..., error: str}
+        """
+        try:
+            host, port, user, _pwd, database = self.get_tenant_credentials(tenant_id)
+            return {"connected": True, "db_host": host, "db_port": port,
+                    "db_name": database, "error": None}
+        except Exception as exc:
+            return {"connected": False, "db_host": None, "db_port": None,
+                    "db_name": None, "error": str(exc)}
 
     def _parse_uri(self, uri: str) -> Tuple[str, int, str, str, str]:
         # Strip jdbc: prefix if present

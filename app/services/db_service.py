@@ -10,7 +10,6 @@ import pymysql.cursors
 from pymysql.connections import Connection
 
 from app.config import settings
-from app.models import AppliedMigration
 
 logger = logging.getLogger(__name__)
 

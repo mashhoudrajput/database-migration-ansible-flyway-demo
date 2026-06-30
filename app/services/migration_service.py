@@ -70,12 +70,18 @@ class MigrationService:
     def _tenant_status(
         self, tenant: Tenant, *, bucket_migrations: List[MigrationFile]
     ) -> TenantMigrationStatus:
-        base = TenantMigrationStatus(
-            tenant_id=tenant.tenant_id,
-            db_host=tenant.db_host,
-            db_name=tenant.db_name,
-        )
         try:
+            conn_info = self.secret.get_tenant_connection_info(tenant.tenant_id)
+            if not conn_info["connected"]:
+                return TenantMigrationStatus(
+                    tenant_id=tenant.tenant_id,
+                    name=tenant.name,
+                    hospital_id=tenant.hospital_id,
+                    cluster_type=tenant.cluster_type,
+                    state=TenantState.NOT_CONNECTED,
+                    error=conn_info["error"],
+                )
+
             host, port, user, password, database = self.secret.get_tenant_credentials(
                 tenant.tenant_id
             )
@@ -102,8 +108,11 @@ class MigrationService:
 
             return TenantMigrationStatus(
                 tenant_id=tenant.tenant_id,
-                db_host=tenant.db_host,
-                db_name=tenant.db_name,
+                name=tenant.name,
+                hospital_id=tenant.hospital_id,
+                cluster_type=tenant.cluster_type,
+                db_host=host,
+                db_name=database,
                 last_applied_version=last["version"] if last else None,
                 last_applied_at=last["applied_at"] if last else None,
                 applied_count=len(applied),
@@ -116,8 +125,9 @@ class MigrationService:
             logger.error("Status check failed for %s: %s", tenant.tenant_id, exc)
             return TenantMigrationStatus(
                 tenant_id=tenant.tenant_id,
-                db_host=tenant.db_host,
-                db_name=tenant.db_name,
+                name=tenant.name,
+                hospital_id=getattr(tenant, "hospital_id", ""),
+                cluster_type=getattr(tenant, "cluster_type", ""),
                 state=TenantState.ERROR,
                 error=str(exc),
             )
@@ -140,9 +150,9 @@ class MigrationService:
                 last = self.db.get_last_applied(conn)
             finally:
                 conn.close()
-            return {"tenant_id": tenant.tenant_id, "last_migration": last}
+            return {"tenant_id": tenant.tenant_id, "name": tenant.name, "last_migration": last}
         except Exception as exc:
-            return {"tenant_id": tenant.tenant_id, "error": str(exc)}
+            return {"tenant_id": tenant.tenant_id, "name": tenant.name, "error": str(exc)}
 
     # ─── History ──────────────────────────────────────────────────────────────
 
@@ -214,6 +224,7 @@ class MigrationService:
                 if not pending:
                     return TenantRunResult(
                         tenant_id=tenant.tenant_id,
+                        name=tenant.name,
                         success=True,
                         message="Already up to date",
                     )
@@ -221,6 +232,7 @@ class MigrationService:
                 if dry_run:
                     return TenantRunResult(
                         tenant_id=tenant.tenant_id,
+                        name=tenant.name,
                         success=True,
                         would_apply=[m.version for m in pending],
                         message=f"Dry run: {len(pending)} migration(s) pending",
@@ -265,6 +277,7 @@ class MigrationService:
 
                 return TenantRunResult(
                     tenant_id=tenant.tenant_id,
+                    name=tenant.name,
                     success=True,
                     applied=applied_versions,
                     message=f"Applied {len(applied_versions)} migration(s)",
@@ -276,6 +289,7 @@ class MigrationService:
             logger.error("Run failed for %s: %s", tenant.tenant_id, exc)
             return TenantRunResult(
                 tenant_id=tenant.tenant_id,
+                name=tenant.name,
                 success=False,
                 error=str(exc),
             )
@@ -323,6 +337,7 @@ class MigrationService:
                 if not last:
                     return TenantRollbackResult(
                         tenant_id=tenant.tenant_id,
+                        name=tenant.name,
                         success=False,
                         error="No migrations applied — nothing to roll back",
                     )
@@ -332,6 +347,7 @@ class MigrationService:
                 if version not in undo_map:
                     return TenantRollbackResult(
                         tenant_id=tenant.tenant_id,
+                        name=tenant.name,
                         success=False,
                         error=(
                             f"No undo script for version {version}. "
@@ -348,6 +364,7 @@ class MigrationService:
                 )
                 return TenantRollbackResult(
                     tenant_id=tenant.tenant_id,
+                    name=tenant.name,
                     success=True,
                     rolled_back_version=version,
                     message=f"Rolled back migration {version}",
@@ -359,6 +376,7 @@ class MigrationService:
             logger.error("Rollback failed for %s: %s", tenant.tenant_id, exc)
             return TenantRollbackResult(
                 tenant_id=tenant.tenant_id,
+                name=tenant.name,
                 success=False,
                 error=str(exc),
             )
