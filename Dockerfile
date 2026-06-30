@@ -17,8 +17,9 @@ RUN useradd -m -u 1001 appuser
 # Copy installed packages from builder
 COPY --from=builder /install /usr/local
 
-# Copy application source
+# Copy application source and demo UI
 COPY app/ ./app/
+COPY static/ ./static/
 
 USER appuser
 

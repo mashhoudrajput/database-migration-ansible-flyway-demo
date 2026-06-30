@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DB Migration Service</title>
+<style>
+:root {
+  --bg:           #0a0f1e;
+  --surface:      #111827;
+  --surface2:     #1f2937;
+  --border:       #374151;
+  --text:         #f9fafb;
+  --muted:        #9ca3af;
+  --green:        #22c55e;
+  --green-dim:    #052e16;
+  --green-border: #166534;
+  --orange:       #f97316;
+  --orange-dim:   #431407;
+  --orange-border:#7c2d12;
+  --red:          #ef4444;
+  --red-dim:      #450a0a;
+  --red-border:   #7f1d1d;
+  --blue:         #3b82f6;
+  --yellow:       #eab308;
+  --r:            8px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;line-height:1.5;min-height:100vh}
+
+/* ── Nav ── */
+.nav{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;height:62px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100}
+.brand{display:flex;align-items:center;gap:12px}
+.brand-icon{font-size:28px}
+.brand-name{font-size:17px;font-weight:700;letter-spacing:-.3px}
+.brand-sub{font-size:11px;color:var(--muted);font-weight:400}
+.nav-right{display:flex;align-items:center;gap:10px}
+.last-refresh{font-size:11px;color:var(--muted)}
+
+/* ── Status pill ── */
+.s-pill{display:flex;align-items:center;gap:6px;padding:5px 12px;border-radius:20px;font-size:12px;font-weight:600;background:var(--surface2);border:1px solid var(--border)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.dot.g{background:var(--green);box-shadow:0 0 6px var(--green)}
+.dot.r{background:var(--red)}
+.dot.y{background:var(--yellow);animation:blink 1s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+
+/* ── Layout ── */
+.main{max-width:1380px;margin:0 auto;padding:22px 24px;display:flex;flex-direction:column;gap:18px}
+
+/* ── Stats bar ── */
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
+@media(max-width:700px){.stats{grid-template-columns:repeat(2,1fr)}}
+.stat{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px}
+.stat-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px}
+.stat-val{font-size:30px;font-weight:800;line-height:1}
+.c-blue{color:var(--blue)} .c-orange{color:var(--orange)} .c-green{color:var(--green)} .c-yellow{color:var(--yellow)} .c-red{color:var(--red)}
+
+/* ── Two-column grid ── */
+.cols{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+@media(max-width:900px){.cols{grid-template-columns:1fr}}
+
+/* ── Card ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;display:flex;flex-direction:column}
+.card-head{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
+.card-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)}
+.card-body{flex:1;overflow-y:auto;max-height:420px}
+
+/* ── Migration row ── */
+.m-row{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;transition:background .12s;cursor:default}
+.m-row:last-child{border-bottom:none}
+.m-row:hover{background:var(--surface2)}
+.ver-badge{padding:3px 7px;border-radius:4px;font-size:11px;font-weight:800;font-family:monospace;flex-shrink:0;min-width:38px;text-align:center}
+.ver-badge.applied{background:var(--green-dim);color:var(--green);border:1px solid var(--green-border)}
+.ver-badge.pending{background:var(--orange-dim);color:var(--orange);border:1px solid var(--orange-border);animation:pulse-o 2.2s ease-in-out infinite}
+.ver-badge.mismatch{background:#451a03;color:var(--yellow);border:1px solid #92400e}
+@keyframes pulse-o{0%,100%{box-shadow:0 0 0 rgba(249,115,22,0)}50%{box-shadow:0 0 12px rgba(249,115,22,.45)}}
+.m-info{flex:1;min-width:0}
+.m-name{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.m-meta{font-size:11px;color:var(--muted);margin-top:1px;font-family:monospace}
+.pill{padding:2px 8px;border-radius:20px;font-size:11px;font-weight:700;flex-shrink:0}
+.pill.applied{background:var(--green-dim);color:var(--green)}
+.pill.pending{background:var(--orange-dim);color:var(--orange)}
+.pill.mismatch{background:#451a03;color:var(--yellow)}
+.pill.error{background:var(--red-dim);color:var(--red)}
+
+/* ── Tenant row ── */
+.t-row{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;transition:background .12s}
+.t-row:last-child{border-bottom:none}
+.t-row:hover{background:var(--surface2)}
+.t-icon{width:36px;height:36px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+.t-icon.ok{background:var(--green-dim)}
+.t-icon.pending{background:var(--orange-dim)}
+.t-icon.error{background:var(--red-dim)}
+.t-info{flex:1;min-width:0}
+.t-id{font-family:monospace;font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t-db{font-size:11px;color:var(--muted);margin-top:1px}
+.t-err{font-size:11px;color:var(--red);margin-top:2px}
+.t-right{text-align:right;flex-shrink:0}
+.t-progress{font-size:14px;font-weight:700}
+.t-progress.ok{color:var(--green)} .t-progress.pending{color:var(--orange)} .t-progress.error{color:var(--red)}
+.t-last{font-size:11px;color:var(--muted);margin-top:1px}
+
+/* ── Buttons ── */
+.btn{padding:9px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;border:none;transition:all .15s;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-blue{background:var(--blue);color:#fff}
+.btn-blue:hover:not(:disabled){background:#2563eb}
+.btn-green{background:#16a34a;color:#fff}
+.btn-green:hover:not(:disabled){background:#15803d}
+.btn-green.glowing{box-shadow:0 0 18px rgba(34,197,94,.5);animation:glow-g 2s ease-in-out infinite}
+@keyframes glow-g{0%,100%{box-shadow:0 0 8px rgba(34,197,94,.3)}50%{box-shadow:0 0 22px rgba(34,197,94,.65)}}
+.btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+.btn-ghost:hover:not(:disabled){background:#374151}
+.btn-danger{background:var(--surface2);color:var(--red);border:1px solid var(--red-border)}
+.btn-danger:hover:not(:disabled){background:var(--red-dim)}
+
+/* ── Action bar ── */
+.actions{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:14px 18px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.actions-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-right:4px}
+.action-msg{font-size:12px;color:var(--muted);margin-left:auto}
+
+/* ── Log ── */
+.log-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);overflow:hidden}
+.log-body{padding:10px 14px;font-family:monospace;font-size:12px;max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:3px}
+.l{line-height:1.7}
+.l .t{color:var(--muted);margin-right:8px}
+.l.ok .m{color:var(--green)}
+.l.err .m{color:var(--red)}
+.l.warn .m{color:var(--yellow)}
+.l.info .m{color:var(--muted)}
+
+/* ── Toasts ── */
+#toasts{position:fixed;top:72px;right:18px;z-index:200;display:flex;flex-direction:column;gap:8px}
+.toast{padding:11px 16px;border-radius:8px;font-size:13px;font-weight:600;max-width:360px;border:1px solid;cursor:pointer;animation:slide .28s ease}
+@keyframes slide{from{transform:translateX(110%);opacity:0}to{transform:translateX(0);opacity:1}}
+.toast.success{background:var(--green-dim);border-color:var(--green-border);color:var(--green)}
+.toast.error{background:var(--red-dim);border-color:var(--red-border);color:var(--red)}
+.toast.warning{background:#451a03;border-color:#92400e;color:var(--yellow)}
+.toast.info{background:var(--surface2);border-color:var(--border);color:var(--text)}
+
+/* ── Misc ── */
+.empty{padding:36px 20px;text-align:center;color:var(--muted);font-size:13px;line-height:2}
+.spin{animation:spin .8s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+.badge-count{padding:2px 7px;border-radius:10px;font-size:11px;font-weight:700;background:var(--orange);color:#fff}
+.badge-count.zero{background:var(--surface2);color:var(--muted)}
+::-webkit-scrollbar{width:5px;height:5px}
+::-webkit-scrollbar-track{background:var(--surface)}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+</style>
+</head>
+<body>
+<div id="toasts"></div>
+
+<!-- ── Navigation ── -->
+<nav class="nav">
+  <div class="brand">
+    <div class="brand-icon">🗄️</div>
+    <div>
+      <div class="brand-name">DB Migration Service</div>
+      <div class="brand-sub">Multi-tenant · GCS Powered</div>
+    </div>
+  </div>
+  <div class="nav-right">
+    <span class="last-refresh" id="lr"></span>
+    <div class="s-pill">
+      <div class="dot y" id="sdot"></div>
+      <span id="stxt">Connecting…</span>
+    </div>
+    <button class="btn btn-ghost" onclick="refresh()" id="rbtn">
+      <span id="rico">↻</span> Refresh
+    </button>
+  </div>
+</nav>
+
+<div class="main">
+
+  <!-- ── Stats ── -->
+  <div class="stats">
+    <div class="stat"><div class="stat-label">Bucket Migrations</div><div class="stat-val c-blue" id="s-total">—</div></div>
+    <div class="stat"><div class="stat-label">Pending</div><div class="stat-val c-orange" id="s-pending">—</div></div>
+    <div class="stat"><div class="stat-label">Tenants</div><div class="stat-val c-green" id="s-tenants">—</div></div>
+    <div class="stat"><div class="stat-label">Undo Scripts</div><div class="stat-val c-yellow" id="s-undos">—</div></div>
+  </div>
+
+  <!-- ── Two columns ── -->
+  <div class="cols">
+
+    <!-- Migration files -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Migration Files</span>
+        <span class="badge-count zero" id="pbadge">0 pending</span>
+      </div>
+      <div class="card-body" id="mlist">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+
+    <!-- Tenants -->
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Tenants</span>
+        <span style="font-size:12px;color:var(--muted)" id="tcnt">—</span>
+      </div>
+      <div class="card-body" id="tlist">
+        <div class="empty">Loading…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ── Actions ── -->
+  <div class="actions">
+    <span class="actions-label">Actions</span>
+    <button class="btn btn-green" id="run-btn" onclick="runMigrations()" disabled>
+      ▶ Run Pending Migrations
+    </button>
+    <button class="btn btn-ghost" id="val-btn" onclick="validateMigrations()">
+      ✓ Validate
+    </button>
+    <button class="btn btn-danger" id="rb-btn" onclick="rollbackLast()">
+      ↩ Rollback Last
+    </button>
+    <span class="action-msg" id="amsg"></span>
+  </div>
+
+  <!-- ── Activity log ── -->
+  <div class="log-card">
+    <div class="card-head">
+      <span class="card-title">Activity Log</span>
+      <button class="btn btn-ghost" onclick="clearLog()" style="padding:3px 8px;font-size:11px">Clear</button>
+    </div>
+    <div class="log-body" id="lbody">
+      <div class="l info"><span class="t">--:--:--</span><span class="m">Initialising…</span></div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<script>
+// ── Config ────────────────────────────────────────────────────────────────────
+// When served from Cloud Run, window.location.origin is the service URL.
+// For local testing, override here or run: python -m http.server (and update CORS).
+const API = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:8080'
+  : window.location.origin;
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let migData = null;
+let bucketData = null;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const now = () => new Date().toLocaleTimeString();
+
+async function get(path) {
+  const r = await fetch(API + path);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+async function post(path, body) {
+  const r = await fetch(API + path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (!r.ok) {
+    const t = await r.text();
+    throw new Error(`${r.status}: ${t.slice(0,200)}`);
+  }
+  return r.json();
+}
+
+// ── Log ───────────────────────────────────────────────────────────────────────
+function log(msg, type = 'info') {
+  const el = document.createElement('div');
+  el.className = `l ${type}`;
+  el.innerHTML = `<span class="t">${now()}</span><span class="m">${esc(msg)}</span>`;
+  const body = $('lbody');
+  body.appendChild(el);
+  body.scrollTop = body.scrollHeight;
+}
+function clearLog() { $('lbody').innerHTML = ''; }
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function toast(msg, type = 'info', ms = 4500) {
+  const el = document.createElement('div');
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  el.onclick = () => el.remove();
+  $('toasts').appendChild(el);
+  setTimeout(() => el.remove(), ms);
+}
+
+// ── Connection state ──────────────────────────────────────────────────────────
+function setConn(state, text) {
+  $('sdot').className = 'dot ' + state;
+  $('stxt').textContent = text;
+}
+
+// ── Refresh ───────────────────────────────────────────────────────────────────
+async function refresh() {
+  setConn('y', 'Connecting…');
+  const btn = $('rbtn');
+  const ico = $('rico');
+  ico.classList.add('spin');
+  btn.disabled = true;
+  log('Refreshing all data…');
+
+  try {
+    const [svc, mig, bucket] = await Promise.all([
+      get('/status'),
+      get('/migrations/status'),
+      get('/migrations/bucket'),
+    ]);
+
+    migData = mig;
+    bucketData = bucket;
+
+    const healthy = svc.status === 'ok';
+    setConn(healthy ? 'g' : 'y', healthy ? 'Connected' : 'Degraded');
+    $('lr').textContent = `Updated ${now()}`;
+
+    // Stats
+    $('s-total').textContent   = bucket.migration_count;
+    $('s-pending').textContent = mig.pending_version_count;
+    $('s-tenants').textContent = mig.tenants.length;
+    $('s-undos').textContent   = bucket.undo_count;
+
+    // Badge
+    const n = mig.pending_version_count;
+    const badge = $('pbadge');
+    badge.textContent = n ? `${n} pending` : '0 pending';
+    badge.className = n ? 'badge-count' : 'badge-count zero';
+
+    // Render
+    renderMigrations(bucket, mig);
+    renderTenants(mig);
+
+    // Run button
+    const runBtn = $('run-btn');
+    runBtn.disabled = !mig.has_pending;
+    if (mig.has_pending) runBtn.classList.add('glowing');
+    else runBtn.classList.remove('glowing');
+
+    log(`Ready — ${bucket.migration_count} migrations in bucket, ${mig.pending_version_count} pending`, 'ok');
+
+  } catch (err) {
+    setConn('r', 'Offline');
+    log(`Refresh failed: ${err.message}`, 'err');
+    toast(`Cannot reach service: ${err.message}`, 'error');
+  } finally {
+    ico.classList.remove('spin');
+    btn.disabled = false;
+  }
+}
+
+// ── Render migrations ─────────────────────────────────────────────────────────
+function renderMigrations(bucket, mig) {
+  const list = $('mlist');
+  if (!bucket.migrations.length) {
+    list.innerHTML = '<div class="empty">No migration files in bucket.<br>Upload <code>V1__create_users.sql</code> to get started.</div>';
+    return;
+  }
+
+  // Build version state map from tenant data
+  const pendingSet = new Set(mig.pending_versions || []);
+  const mismatchSet = new Set();
+  mig.tenants.forEach(t => (t.checksum_mismatches || []).forEach(v => mismatchSet.add(v)));
+
+  list.innerHTML = bucket.migrations.map(m => {
+    const isPending  = pendingSet.has(m.version);
+    const isMismatch = mismatchSet.has(m.version);
+
+    let vClass, pClass, pLabel;
+    if (isMismatch) {
+      vClass = 'mismatch'; pClass = 'mismatch'; pLabel = '⚠ Mismatch';
+    } else if (isPending) {
+      vClass = 'pending'; pClass = 'pending'; pLabel = '◉ Pending';
+    } else {
+      vClass = 'applied'; pClass = 'applied'; pLabel = '✓ Applied';
+    }
+
+    const kb = (m.size_bytes / 1024).toFixed(1);
+    return `<div class="m-row">
+      <div class="ver-badge ${vClass}">V${esc(m.version)}</div>
+      <div class="m-info">
+        <div class="m-name">${esc(m.description)}</div>
+        <div class="m-meta">${esc(m.filename)} · ${kb} KB</div>
+      </div>
+      <div class="pill ${pClass}">${pLabel}</div>
+    </div>`;
+  }).join('');
+}
+
+// ── Render tenants ────────────────────────────────────────────────────────────
+function renderTenants(mig) {
+  const list = $('tlist');
+  $('tcnt').textContent = `${mig.tenants.length} total`;
+
+  if (!mig.tenants.length) {
+    list.innerHTML = '<div class="empty">No tenants found in discovery database.</div>';
+    return;
+  }
+
+  const total = bucketData ? bucketData.migration_count : '?';
+
+  list.innerHTML = mig.tenants.map(t => {
+    let iconClass, iconChar, progClass;
+    if (t.state === 'error')             { iconClass='error';   iconChar='✗'; progClass='error'; }
+    else if (t.pending_count > 0 || t.state === 'pending')
+                                          { iconClass='pending'; iconChar='⚠'; progClass='pending'; }
+    else if (t.state === 'checksum_mismatch')
+                                          { iconClass='pending'; iconChar='!'; progClass='pending'; }
+    else                                  { iconClass='ok';      iconChar='✓'; progClass='ok'; }
+
+    const shortId = t.tenant_id.length > 20 ? t.tenant_id.slice(0,18) + '…' : t.tenant_id;
+    const lastV   = t.last_applied_version ? `V${t.last_applied_version}` : 'none';
+    const applied = t.applied_count ?? 0;
+
+    return `<div class="t-row">
+      <div class="t-icon ${iconClass}">${iconChar}</div>
+      <div class="t-info">
+        <div class="t-id" title="${esc(t.tenant_id)}">${esc(shortId)}</div>
+        <div class="t-db">${esc(t.db_name)} @ ${esc(t.db_host)}</div>
+        ${t.error ? `<div class="t-err">${esc(t.error.slice(0,80))}</div>` : ''}
+      </div>
+      <div class="t-right">
+        <div class="t-progress ${progClass}">${applied} / ${total}</div>
+        <div class="t-last">Last: ${lastV}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Run migrations ────────────────────────────────────────────────────────────
+async function runMigrations() {
+  if (!migData?.has_pending) { toast('No pending migrations to run', 'info'); return; }
+
+  const versions = migData.pending_versions.map(v => `V${v}`).join(', ');
+  if (!confirm(`Apply ${migData.pending_version_count} pending migration(s) to ALL tenants?\n\nVersions: ${versions}\n\nThis will execute SQL against tenant databases. Continue?`)) return;
+
+  const btn = $('run-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">↻</span> Running…';
+  btn.classList.remove('glowing');
+  $('amsg').textContent = 'Running migrations…';
+  log(`Starting run — versions: ${versions}`, 'info');
+
+  try {
+    const res = await post('/migrations/run', { confirm: true });
+    const ok = res.success;
+    const msg = `${ok ? '✓' : '⚠'} Applied to ${res.tenants_succeeded}/${res.tenants_processed} tenants`;
+    log(msg, ok ? 'ok' : 'warn');
+    $('amsg').textContent = msg;
+    toast(msg, ok ? 'success' : 'warning', 5000);
+
+    res.results.filter(r => !r.success).forEach(r =>
+      log(`  ✗ ${r.tenant_id}: ${r.error}`, 'err')
+    );
+    res.results.filter(r => r.success && r.applied?.length).forEach(r =>
+      log(`  ✓ ${r.tenant_id}: applied ${r.applied.join(', ')}`, 'ok')
+    );
+
+    await refresh();
+  } catch (err) {
+    log(`Run failed: ${err.message}`, 'err');
+    toast(`Migration failed: ${err.message}`, 'error', 7000);
+    $('amsg').textContent = '✗ Failed';
+  } finally {
+    btn.innerHTML = '▶ Run Pending Migrations';
+  }
+}
+
+// ── Validate ──────────────────────────────────────────────────────────────────
+async function validateMigrations() {
+  const btn = $('val-btn');
+  btn.disabled = true;
+  btn.textContent = '✓ Validating…';
+  log('Validating bucket contents…');
+
+  try {
+    const res = await get('/migrations/validate');
+    if (res.valid) {
+      const msg = `✓ Valid — ${res.migration_count} migrations, ${res.undo_count} undo scripts, no issues`;
+      log(msg, 'ok');
+      toast(msg, 'success');
+    } else {
+      const errs = res.issues.filter(i => i.level === 'error');
+      const warns = res.issues.filter(i => i.level === 'warning');
+      log(`Validation: ${errs.length} error(s), ${warns.length} warning(s)`, 'warn');
+      res.issues.forEach(i => log(`  [${i.level}] ${i.filename}: ${i.message}`, i.level === 'error' ? 'err' : 'warn'));
+      toast(`Validation: ${errs.length} error(s) found`, 'error', 6000);
+    }
+  } catch (err) {
+    log(`Validate error: ${err.message}`, 'err');
+    toast(`Validate failed: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '✓ Validate';
+  }
+}
+
+// ── Rollback ──────────────────────────────────────────────────────────────────
+async function rollbackLast() {
+  if (!confirm('Roll back the LAST applied migration for ALL tenants?\n\nA matching undo script (U{N}__*.sql) must exist in the bucket.\n\nThis is irreversible. Continue?')) return;
+
+  const btn = $('rb-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin">↻</span> Rolling back…';
+  log('Starting rollback…', 'warn');
+  $('amsg').textContent = 'Rolling back…';
+
+  try {
+    const res = await post('/migrations/rollback', { confirm: true });
+    const ok = res.success;
+    const msg = `${ok ? '✓' : '⚠'} Rolled back ${res.tenants_succeeded}/${res.tenants_processed} tenants`;
+    log(msg, ok ? 'ok' : 'warn');
+    $('amsg').textContent = msg;
+    toast(msg, ok ? 'success' : 'warning', 5000);
+
+    res.results.filter(r => r.success).forEach(r =>
+      log(`  ✓ ${r.tenant_id}: rolled back ${r.rolled_back_version}`, 'ok')
+    );
+    res.results.filter(r => !r.success).forEach(r =>
+      log(`  ✗ ${r.tenant_id}: ${r.error}`, 'err')
+    );
+
+    await refresh();
+  } catch (err) {
+    log(`Rollback failed: ${err.message}`, 'err');
+    toast(`Rollback failed: ${err.message}`, 'error');
+    $('amsg').textContent = '✗ Failed';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '↩ Rollback Last';
+  }
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+refresh();
+setInterval(() => { log('Auto-refresh…'); refresh(); }, 30000);
+</script>
+</body>
+</html>

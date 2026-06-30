@@ -1,13 +1,16 @@
 import logging
-import os
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import settings
 from app.routers import health, migrations, tenants
+
+_HTML = Path(__file__).parent.parent / "static" / "index.html"
 
 # ─── Logging ─────────────────────────────────────────────────────────────────
 # Structured JSON logs are picked up by Cloud Logging automatically.
@@ -44,9 +47,22 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(health.router)
 app.include_router(migrations.router)
 app.include_router(tenants.router)
+
+
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def demo_ui():
+    """Serves the demo dashboard. Open this URL in a browser."""
+    return _HTML.read_text(encoding="utf-8")
 
 
 # ─── Global error handler ────────────────────────────────────────────────────
