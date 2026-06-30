@@ -39,9 +39,7 @@ class DBService:
         password: str,
         database: str,
     ) -> Connection:
-        return pymysql.connect(
-            host=host,
-            port=port,
+        base = dict(
             user=user,
             password=password,
             database=database,
@@ -49,6 +47,12 @@ class DBService:
             cursorclass=pymysql.cursors.DictCursor,
             autocommit=False,
         )
+        if settings.cloud_sql_connection_name:
+            base["unix_socket"] = f"/cloudsql/{settings.cloud_sql_connection_name}"
+        else:
+            base["host"] = host
+            base["port"] = port
+        return pymysql.connect(**base)
 
     def ensure_history_table(self, conn: Connection) -> None:
         table = settings.migration_history_table

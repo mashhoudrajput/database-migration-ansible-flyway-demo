@@ -26,15 +26,19 @@ class Tenant:
 
 class DiscoveryService:
     def _connect(self) -> pymysql.connections.Connection:
-        return pymysql.connect(
-            host=settings.discovery_db_host,
-            port=settings.discovery_db_port,
+        base = dict(
             user=settings.discovery_db_user,
             password=settings.discovery_db_password,
             database=settings.discovery_db_name,
             connect_timeout=settings.discovery_db_connect_timeout,
             cursorclass=pymysql.cursors.DictCursor,
         )
+        if settings.cloud_sql_connection_name:
+            base["unix_socket"] = f"/cloudsql/{settings.cloud_sql_connection_name}"
+        else:
+            base["host"] = settings.discovery_db_host
+            base["port"] = settings.discovery_db_port
+        return pymysql.connect(**base)
 
     def ping(self) -> tuple:
         """Returns (True, None) on success or (False, error_str) on failure."""

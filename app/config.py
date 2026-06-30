@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Table created inside each tenant DB to track migration history
     migration_history_table: str = "_migration_history"
 
+    # Cloud SQL instance connection name (project:region:instance).
+    # When set, all DB connections use the Cloud SQL Proxy Unix socket instead
+    # of TCP — this routes through root@localhost which has full privileges.
+    cloud_sql_connection_name: Optional[str] = None
+
     # Max concurrent tenant operations
     migration_max_workers: int = 10
 
