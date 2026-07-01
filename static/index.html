@@ -451,7 +451,7 @@
     try {
       const [status, bucket] = await Promise.all([
         api('/tenants/' + currentTenantId + '/status'),
-        api('/migrations/'),
+        api('/migrations/bucket'),
       ]);
       allBucketMigrations = bucket.migrations || [];
       renderDetail(status);
